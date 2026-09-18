@@ -1,0 +1,77 @@
+# kstd.fl — MerlinOS kernel standard library
+#
+# --freestanding mode gives us the language and the hardware intrinsics
+# (__peek/__poke/__inb/__outb/etc) but none of Falcon's normal runtime:
+# no _flr_alloc, no str_concat, no str_format. Arrays and structs both
+# compile down to calls into _flr_alloc, so without this file any use
+# of `[T]` or a struct literal is an unresolved-symbol link error.
+#
+# NOTE: global variable initializers are NOT emitted in --freestanding
+# mode (falconc always zero-inits globals and drops the RHS). Never
+# rely on `g: int = 5` actually being 5 at boot -- set real values from
+# an init function called at the top of main() instead. That's why
+# kheap_init() sets g_kheap_ptr explicitly rather than trusting its
+# declared initializer.
+#
+# This file is Falcon, not asm -- it's imported by every other kernel
+# source file with `import "kstd"`.
+
+g_kheap_ptr: int = 0
+
+func kheap_init() -> void {
+    g_kheap_ptr = 0x00400000   # 4 MiB -- well clear of the kernel image
+}
+
+# Called automatically by the compiler wherever `[T]`, a struct literal,
+# or a struct variable declaration needs backing memory.
+func _flr_alloc(n: int) -> int {
+    p: int = g_kheap_ptr
+    aligned: int = (n + 15) & ~15
+    g_kheap_ptr += aligned
+    return p
+}
+
+func _flr_free(ptr: int) -> void {
+    # bump allocator -- no reclamation, matches hosted Falcon's semantics
+}
+
+func kstrlen(s: int) -> int {
+    i: int = 0
+    while (__peekb(s + i) != 0) {
+        i += 1
+    }
+    return i
+}
+
+func kstreq(a: int, b: int) -> bool {
+    i: int = 0
+    while (true) {
+        ca: int = __peekb(a + i)
+        cb: int = __peekb(b + i)
+        if (ca != cb) { return false }
+        if (ca == 0) { return true }
+        i += 1
+    }
+    return true
+}
+
+func kmemset(dst: int, val: int, n: int) -> void {
+    # NOTE: the __memset intrinsic calls out to _flr_memset, which only
+    # exists in the hosted runtime (flr.o) -- unavailable in
+    # --freestanding, so this is a plain byte loop instead.
+    i: int = 0
+    while (i < n) {
+        __pokeb(dst + i, val)
+        i += 1
+    }
+}
+
+func kmemcpy(dst: int, src: int, n: int) -> void {
+    # same story as kmemset -- __memcpy needs _flr_memcpy, not present
+    # in freestanding mode.
+    i: int = 0
+    while (i < n) {
+        __pokeb(dst + i, __peekb(src + i))
+        i += 1
+    }
+}

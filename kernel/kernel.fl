@@ -1,0 +1,38 @@
+# kernel.fl — Kestrel, the MerlinOS kernel
+# Entry point called directly by boot.s (no libc, no _flr_* runtime,
+# nothing but what kstd.fl provides).
+
+import "kstd"
+import "vga"
+
+func main() -> void {
+    kheap_init()
+    vga_clear()
+
+    vga_set_color(0x0F)
+    vga_print("MerlinOS\n")
+    vga_set_color(0x07)
+    vga_print("Kestrel kernel -- stage 0\n\n")
+
+    vga_set_color(0x0A)
+    vga_print("[ok] VGA text driver\n")
+    vga_print("[ok] kernel heap at ")
+    vga_print_hex(0x00400000)
+    vga_print("\n")
+
+    # sanity check: allocator + arrays + arithmetic all actually work
+    nums: [int] = [10, 20, 30, 40]
+    sum: int = 0
+    i: int = 0
+    while (i < 4) {
+        sum += nums[i]
+        i += 1
+    }
+    vga_set_color(0x0F)
+    vga_print("[ok] heap alloc + array test, sum = ")
+    vga_print_dec(sum)
+    vga_print("\n")
+
+    vga_set_color(0x08)
+    vga_print("\nsystem idle.\n")
+}

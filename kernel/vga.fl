@@ -1,0 +1,122 @@
+# vga.fl — VGA text-mode driver (80x25, 0xB8000)
+#
+# NOTE: as in kstd.fl, global initializers are dropped in --freestanding.
+# g_vga_row/g_vga_col/g_vga_attr are reset explicitly by vga_clear(),
+# which must be called once before any other vga_* function.
+
+g_vga_row: int = 0
+g_vga_col: int = 0
+g_vga_attr: int = 0
+
+func vga_set_color(attr: int) -> void {
+    g_vga_attr = attr
+}
+
+func vga_clear() -> void {
+    cell: int = 0xB8000
+    end: int = 0xB8000 + 80 * 25 * 2
+    while (cell < end) {
+        __pokeb(cell, 0x20)
+        __pokeb(cell + 1, 0x0F)
+        cell += 2
+    }
+    g_vga_row = 0
+    g_vga_col = 0
+    g_vga_attr = 0x0F
+}
+
+func vga_scroll() -> void {
+    row_bytes: int = 80 * 2
+    src: int = 0xB8000 + row_bytes
+    dst: int = 0xB8000
+    total: int = row_bytes * 24
+    kmemcpy(dst, src, total)
+
+    last_row: int = 0xB8000 + row_bytes * 24
+    end: int = last_row + row_bytes
+    cell: int = last_row
+    while (cell < end) {
+        __pokeb(cell, 0x20)
+        __pokeb(cell + 1, 0x0F)
+        cell += 2
+    }
+    g_vga_row = 24
+}
+
+func vga_newline() -> void {
+    g_vga_col = 0
+    g_vga_row += 1
+    if (g_vga_row >= 25) {
+        vga_scroll()
+    }
+}
+
+func vga_putc(c: int) -> void {
+    if (c == 10) {
+        vga_newline()
+        return
+    }
+    offset: int = (g_vga_row * 80 + g_vga_col) * 2
+    cell: int = 0xB8000 + offset
+    __pokeb(cell, c)
+    __pokeb(cell + 1, g_vga_attr)
+    g_vga_col += 1
+    if (g_vga_col >= 80) {
+        vga_newline()
+    }
+}
+
+func vga_print(s: int) -> void {
+    i: int = 0
+    while (true) {
+        c: int = __peekb(s + i)
+        if (c == 0) { break }
+        vga_putc(c)
+        i += 1
+    }
+}
+
+func vga_print_hex(n: int) -> void {
+    vga_putc(48)   # '0'
+    vga_putc(120)  # 'x'
+    i: int = 28
+    started: bool = false
+    while (i >= 0) {
+        digit: int = (n >> i) & 0xF
+        if (digit != 0) { started = true }
+        if (started or i == 0) {
+            if (digit < 10) {
+                vga_putc(48 + digit)
+            } else {
+                vga_putc(97 + (digit - 10))
+            }
+        }
+        i -= 4
+    }
+}
+
+func vga_print_dec(n: int) -> void {
+    if (n == 0) {
+        vga_putc(48)
+        return
+    }
+    neg: bool = false
+    v: int = n
+    if (v < 0) {
+        neg = true
+        v = 0 - v
+    }
+    buf: [int] = [0,0,0,0,0,0,0,0,0,0,0,0]
+    len: int = 0
+    while (v > 0) {
+        buf[len] = v % 10
+        v = v / 10
+        len += 1
+    }
+    if (neg) { vga_putc(45) }
+    i: int = len - 1
+    while (i >= 0) {
+        vga_putc(48 + buf[i])
+        i -= 1
+    }
+}
