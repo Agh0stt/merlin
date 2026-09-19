@@ -1,17 +1,29 @@
 # keyboard.fl — PS/2 keyboard, IRQ1, scancode set 1
 #
-# Stage 1: just enough to prove the interrupt actually fires and to
-# echo what's typed to the screen. No modifier-key state, no
-# scancode-release handling beyond dropping it, no input buffer yet.
+# Stage 6: real line editing. The IRQ handler no longer just echoes
+# straight to the screen -- it builds up a line in g_kbd_linebuf and
+# only signals g_kbd_line_ready once Enter is pressed, so a shell (or
+# anything else) can block waiting for a complete line instead of
+# reading one keystroke at a time. Backspace actually erases both the
+# buffered character and the on-screen glyph. Shift is tracked so
+# letters and the punctuation row work properly, not just lowercase.
+
+KBD_LINEBUF_CAP: int = 128
 
 g_kbd_us_lower: [int] = [0]
+g_kbd_us_upper: [int] = [0]
+g_kbd_shift: bool = false
+
+g_kbd_linebuf: [int] = [0]
+g_kbd_linelen: int = 0
+g_kbd_line_ready: bool = false
 
 func keyboard_init() -> void {
-    # scancode -> ASCII for the lowercase US layout, index = scancode.
-    # Built at runtime for the same reason every other table in this
-    # kernel is: array literals need a live heap allocator, and this
-    # one is too long to worry about hand-placing in .rodata.
-    tbl: [int] = [
+    # scancode -> ASCII, index = scancode. Built at runtime for the
+    # same reason every other table in this kernel is: array literals
+    # need a live heap allocator, and these are too long to worry
+    # about hand-placing in .rodata.
+    lower: [int] = [
         0,27,49,50,51,52,53,54,55,56,57,48,45,61,8,9,
         113,119,101,114,116,121,117,105,111,112,91,93,10,0,97,115,
         100,102,103,104,106,107,108,59,39,96,0,92,122,120,99,118,
@@ -19,20 +31,97 @@ func keyboard_init() -> void {
         0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
         0,0,0,0,0,0,0,0,0,0,0,0,0,0
     ]
-    g_kbd_us_lower = tbl
+    upper: [int] = [
+        0,27,33,64,35,36,37,94,38,42,40,41,95,43,8,9,
+        81,87,69,82,84,89,85,73,79,80,123,125,10,0,65,83,
+        68,70,71,72,74,75,76,58,34,126,0,124,90,88,67,86,
+        66,78,77,60,62,63,0,42,0,32,0,0,0,0,0,0,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    ]
+    g_kbd_us_lower = lower
+    g_kbd_us_upper = upper
+
+    buf: [int] = [
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    ]
+    g_kbd_linebuf = buf
+    g_kbd_linelen = 0
+    g_kbd_line_ready = false
+    g_kbd_shift = false
 }
 
 func keyboard_handle() -> void {
     sc: int = __inb(0x60)
+
+    if (sc == 0x2A) {
+        g_kbd_shift = true
+        return
+    }
+    if (sc == 0x36) {
+        g_kbd_shift = true
+        return
+    }
+    if (sc == 0xAA) {
+        g_kbd_shift = false
+        return
+    }
+    if (sc == 0xB6) {
+        g_kbd_shift = false
+        return
+    }
+
     if (sc >= 0x80) {
-        return  # key-release, ignore for now
+        return   # other key-release, ignore
+    }
+    if (sc == 0x0E) {
+        # backspace
+        if (g_kbd_linelen > 0) {
+            g_kbd_linelen -= 1
+            vga_backspace()
+        }
+        return
     }
     if (sc >= 90) {
-        return  # past the end of our table
+        return   # past the end of our tables
     }
-    c: int = g_kbd_us_lower[sc]
-    if (c != 0) {
-        vga_set_color(0x0F)
+
+    c: int = 0
+    if (g_kbd_shift) {
+        c = g_kbd_us_upper[sc]
+    } else {
+        c = g_kbd_us_lower[sc]
+    }
+    if (c == 0) {
+        return
+    }
+
+    vga_set_color(0x0F)
+
+    if (c == 10) {
+        vga_putc(10)
+        g_kbd_linebuf[g_kbd_linelen] = 0
+        g_kbd_line_ready = true
+        return
+    }
+
+    if (g_kbd_linelen < KBD_LINEBUF_CAP - 1) {
+        g_kbd_linebuf[g_kbd_linelen] = c
+        g_kbd_linelen += 1
         vga_putc(c)
     }
+}
+
+# Called by anything (currently the shell task) that consumed
+# g_kbd_linebuf and wants to start accepting the next line.
+func keyboard_reset_line() -> void {
+    g_kbd_linelen = 0
+    g_kbd_line_ready = false
 }

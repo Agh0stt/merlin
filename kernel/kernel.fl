@@ -13,6 +13,9 @@ import "pic"
 import "keyboard"
 import "pmm"
 import "vmm"
+import "fs"
+import "pci"
+import "shell"
 
 func main(mb_magic: int, mb_info: int) -> void {
     kheap_init()
@@ -23,7 +26,7 @@ func main(mb_magic: int, mb_info: int) -> void {
     vga_set_color(0x0F)
     vga_print("MerlinOS\n")
     vga_set_color(0x07)
-    vga_print("Kestrel kernel -- stage 5\n\n")
+    vga_print("Kestrel kernel -- stage 6\n\n")
 
     vga_set_color(0x0A)
     vga_print("[ok] VGA text driver\n")
@@ -151,11 +154,20 @@ func main(mb_magic: int, mb_info: int) -> void {
         vga_print("\n")
     }
 
+    vga_set_color(0x0A)
+    vga_print("[ok] scheduler + shell starting\n")
+    shell_init()
+
     vga_set_color(0x08)
-    vga_print("\ntype something:\n")
+    vga_print("\n")
     vga_set_color(0x0F)
 
+    # main() is task 0 from here on -- an idle loop that yields to the
+    # shell whenever it has nothing else to do, and hlts between
+    # yields so the CPU actually sleeps rather than spinning while
+    # waiting for the next keystroke or timer tick.
     while (true) {
+        yield()
         __hlt()
     }
 }

@@ -1,0 +1,161 @@
+# shell.fl — built-in-command shell, running as task 1
+#
+# Runs as a cooperative task (see tasking.s): prints a prompt, yields
+# in a loop until the keyboard IRQ handler sets g_kbd_line_ready, then
+# parses and dispatches the line. No external program loading -- every
+# command here is a compiled-in function. That's the honest scope
+# until there's a filesystem and a real ELF/flat-binary loader.
+
+SHELL_STACK_SIZE: int = 8192
+
+func shell_init() -> void {
+    fs_init()
+    stack_mem: int = kmalloc(SHELL_STACK_SIZE)
+    stack_top: int = stack_mem + SHELL_STACK_SIZE
+    task_spawn_shell(stack_top)
+}
+
+func shell_cmd_len() -> int {
+    i: int = 0
+    while (i < g_kbd_linelen) {
+        if (g_kbd_linebuf[i] == 32) {
+            return i
+        }
+        i += 1
+    }
+    return g_kbd_linelen
+}
+
+func shell_cmd_is(cmd_len: int, s: int) -> bool {
+    slen: int = kstrlen(s)
+    if (slen != cmd_len) {
+        return false
+    }
+    i: int = 0
+    while (i < slen) {
+        if (g_kbd_linebuf[i] != __peekb(s + i)) {
+            return false
+        }
+        i += 1
+    }
+    return true
+}
+
+func shell_print_args(skip: int) -> void {
+    i: int = skip
+    while (i < g_kbd_linelen) {
+        vga_putc(g_kbd_linebuf[i])
+        i += 1
+    }
+    vga_putc(10)
+}
+
+func shell_prompt() -> void {
+    vga_set_color(0x0B)
+    vga_print("merlin> ")
+    vga_set_color(0x0F)
+}
+
+func shell_help() -> void {
+    vga_print("built-in commands:\n")
+    vga_print("  help    this text\n")
+    vga_print("  clear   clear the screen\n")
+    vga_print("  mem     heap + physical memory stats\n")
+    vga_print("  uptime  seconds since boot (PIT ticks / 100)\n")
+    vga_print("  echo    print the rest of the line\n")
+    vga_print("  pci     enumerate PCI devices\n")
+    vga_print("  ls      list files on the boot disk\n")
+    vga_print("  reboot  reset the machine via the 8042 controller\n")
+}
+
+func shell_mem() -> void {
+    vga_print("PMM: ")
+    vga_print_dec(g_pmm_total_pages)
+    vga_print(" pages total, ")
+    vga_print_dec(g_pmm_free_pages)
+    vga_print(" free (")
+    vga_print_dec(g_pmm_free_pages * 4 / 1024)
+    vga_print(" MiB)\n")
+    vga_print("heap: base ")
+    vga_print_hex(g_kmalloc_base)
+    vga_print(", ")
+    vga_print_dec(g_kmalloc_size / 1024)
+    vga_print(" KiB region\n")
+}
+
+func shell_uptime() -> void {
+    secs: int = g_tick_count / 100
+    vga_print_dec(secs)
+    vga_print(" seconds\n")
+}
+
+func shell_reboot() -> void {
+    vga_print("rebooting...\n")
+    __cli()
+    i: int = 0
+    while (i < 1000000) {
+        i += 1
+    }
+    __outb(0x64, 0xFE)
+    while (true) {
+        __hlt()
+    }
+}
+
+func shell_dispatch(cmd_len: int) -> void {
+    if (cmd_len == 0) {
+        return
+    }
+    if (shell_cmd_is(cmd_len, "help")) {
+        shell_help()
+        return
+    }
+    if (shell_cmd_is(cmd_len, "clear")) {
+        vga_clear()
+        return
+    }
+    if (shell_cmd_is(cmd_len, "mem")) {
+        shell_mem()
+        return
+    }
+    if (shell_cmd_is(cmd_len, "uptime")) {
+        shell_uptime()
+        return
+    }
+    if (shell_cmd_is(cmd_len, "echo")) {
+        if (cmd_len < g_kbd_linelen) {
+            shell_print_args(cmd_len + 1)
+        } else {
+            vga_putc(10)
+        }
+        return
+    }
+    if (shell_cmd_is(cmd_len, "pci")) {
+        pci_scan()
+        return
+    }
+    if (shell_cmd_is(cmd_len, "ls")) {
+        fs_list()
+        return
+    }
+    if (shell_cmd_is(cmd_len, "reboot")) {
+        shell_reboot()
+        return
+    }
+    vga_set_color(0x0E)
+    vga_print("unknown command (try 'help')\n")
+    vga_set_color(0x0F)
+}
+
+func shell_task() -> void {
+    vga_print("\n")
+    while (true) {
+        shell_prompt()
+        while (not g_kbd_line_ready) {
+            yield()
+        }
+        cmd_len: int = shell_cmd_len()
+        shell_dispatch(cmd_len)
+        keyboard_reset_line()
+    }
+}

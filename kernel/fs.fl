@@ -1,0 +1,328 @@
+# fs.fl — MerlinFS: a small, custom, flat filesystem
+#
+# This is deliberately NOT FAT32 or any existing on-disk format.
+# Parsing FAT32 correctly (BPB quirks, FAT chains, long filenames)
+# without ever being able to run and observe the result is a real way
+# to ship something silently wrong. This format is simple enough to
+# get right by hand-tracing the logic instead, which is exactly what
+# was done before this shipped -- see the project history for the
+# equivalent trace done for kmalloc.fl. Real FAT32 (or ext2, or
+# anything else with existing tooling) is a legitimate future
+# upgrade once there's a way to actually test against real images.
+#
+# Layout, in 512-byte sectors:
+#   sector 0       : superblock
+#   sectors 1-4    : file table -- 32 fixed-size 64-byte entries
+#   sector 5+      : file data, bump-allocated (never reclaimed --
+#                    deleting a file is not implemented; another
+#                    known, documented gap rather than a silent one)
+#
+# Superblock (sector 0), all fields 4-byte ints:
+#   +0  magic             0x4D4C4653 ('MLFS' as bytes, byte order is
+#                         an internal convention only -- nothing else
+#                         needs to agree with it)
+#   +4  version           1
+#   +8  total_sectors
+#   +12 file_table_sectors  (always 4)
+#   +16 data_start_sector   (always 5)
+#   +20 file_count
+#   +24 next_data_sector  (bump allocator cursor)
+#
+# File table entry (64 bytes):
+#   +0  name[32]   null-padded ASCII
+#   +32 start_sector
+#   +36 size_bytes
+#   +40 used       0 or 1
+#   +44 reserved[20]
+#
+# The filesystem is mounted lazily -- fs_ensure_mounted() is called by
+# every public entry point below, never automatically at kernel boot.
+# Touching the disk unconditionally at boot, before anything has had
+# a chance to attach one, is exactly the kind of thing that turns
+# "works on my machine" into "hangs on everyone else's" -- ata.s's
+# bounded timeouts mean a missing drive fails in a few seconds rather
+# than forever, but a few seconds of dead time on every single boot
+# for a feature nobody asked for yet is still a bad default.
+
+FS_MAGIC: int = 0x4D4C4653
+FS_TABLE_SECTORS: int = 4
+FS_DATA_START: int = 5
+FS_MAX_FILES: int = 32
+
+g_fs_sector_buf: int = 0
+g_fs_table_buf: int = 0
+g_fs_mounted: bool = false
+g_fs_total_sectors: int = 0
+g_fs_file_count: int = 0
+g_fs_next_data_sector: int = 0
+
+g_fs_found_start_sector: int = 0
+g_fs_found_size: int = 0
+g_fs_found_slot: int = 0
+
+func fs_init() -> void {
+    g_fs_sector_buf = kmalloc(512)
+    g_fs_table_buf = kmalloc(512)
+}
+
+func fs_save_superblock() -> void {
+    __poke(g_fs_sector_buf + 0, FS_MAGIC)
+    __poke(g_fs_sector_buf + 4, 1)
+    __poke(g_fs_sector_buf + 8, g_fs_total_sectors)
+    __poke(g_fs_sector_buf + 12, FS_TABLE_SECTORS)
+    __poke(g_fs_sector_buf + 16, FS_DATA_START)
+    __poke(g_fs_sector_buf + 20, g_fs_file_count)
+    __poke(g_fs_sector_buf + 24, g_fs_next_data_sector)
+    ata_write_sector(0, g_fs_sector_buf)
+}
+
+func fs_format(total_sectors: int) -> void {
+    g_fs_total_sectors = total_sectors
+    g_fs_file_count = 0
+    g_fs_next_data_sector = FS_DATA_START
+    fs_save_superblock()
+
+    i: int = 0
+    while (i < 512) {
+        __pokeb(g_fs_table_buf + i, 0)
+        i += 1
+    }
+    s: int = 0
+    while (s < FS_TABLE_SECTORS) {
+        ata_write_sector(1 + s, g_fs_table_buf)
+        s += 1
+    }
+}
+
+func fs_mount() -> bool {
+    ata_read_sector(0, g_fs_sector_buf)
+    magic: int = __peek(g_fs_sector_buf + 0)
+    if (magic != FS_MAGIC) {
+        return false
+    }
+    g_fs_total_sectors = __peek(g_fs_sector_buf + 8)
+    g_fs_file_count = __peek(g_fs_sector_buf + 20)
+    g_fs_next_data_sector = __peek(g_fs_sector_buf + 24)
+    return true
+}
+
+func fs_ensure_mounted() -> void {
+    if (g_fs_mounted) {
+        return
+    }
+    if (fs_mount()) {
+        g_fs_mounted = true
+        return
+    }
+    vga_set_color(0x0E)
+    vga_print("no MerlinFS found -- formatting (65536 sectors, 32 MiB)\n")
+    vga_set_color(0x0F)
+    # 65536 is a guess, not a real disk-size query (that needs IDENTIFY
+    # DEVICE, ATA command 0xEC -- not implemented). If the actual disk
+    # is smaller, writes past its real end are undefined; if it's
+    # bigger, the extra space is simply never used. Worth fixing with
+    # a real IDENTIFY before this filesystem is trusted with anything
+    # that matters.
+    fs_format(65536)
+    g_fs_mounted = true
+}
+
+func fs_entry_name_matches(entry_addr: int, name: int) -> bool {
+    slen: int = kstrlen(name)
+    if (slen > 31) {
+        return false
+    }
+    i: int = 0
+    while (i < slen) {
+        if (__peekb(entry_addr + i) != __peekb(name + i)) {
+            return false
+        }
+        i += 1
+    }
+    if (__peekb(entry_addr + slen) != 0) {
+        return false
+    }
+    return true
+}
+
+# Scans the file table for `name`. On success returns true and fills
+# g_fs_found_start_sector / g_fs_found_size / g_fs_found_slot -- no
+# address-of operator in Falcon (see tasking.s for the same
+# constraint), so out-params come back via globals throughout this
+# file, same as everywhere else in this kernel.
+func fs_find(name: int) -> bool {
+    slot: int = 0
+    while (slot < FS_MAX_FILES) {
+        table_sector: int = 1 + slot / 8
+        offset: int = (slot % 8) * 64
+        if (offset == 0) {
+            ata_read_sector(table_sector, g_fs_table_buf)
+        }
+        entry_addr: int = g_fs_table_buf + offset
+        used: int = __peek(entry_addr + 40)
+        if (used == 1) {
+            if (fs_entry_name_matches(entry_addr, name)) {
+                g_fs_found_start_sector = __peek(entry_addr + 32)
+                g_fs_found_size = __peek(entry_addr + 36)
+                g_fs_found_slot = slot
+                return true
+            }
+        }
+        slot += 1
+    }
+    return false
+}
+
+func fs_create(name: int, size_bytes: int) -> bool {
+    fs_ensure_mounted()
+    if (kstrlen(name) > 31) {
+        return false
+    }
+    if (fs_find(name)) {
+        return false   # already exists
+    }
+
+    found_slot: int = -1
+    slot: int = 0
+    while (slot < FS_MAX_FILES) {
+        table_sector: int = 1 + slot / 8
+        offset: int = (slot % 8) * 64
+        if (offset == 0) {
+            ata_read_sector(table_sector, g_fs_table_buf)
+        }
+        entry_addr: int = g_fs_table_buf + offset
+        used: int = __peek(entry_addr + 40)
+        if (used == 0) {
+            found_slot = slot
+            break
+        }
+        slot += 1
+    }
+    if (found_slot == -1) {
+        return false   # file table full
+    }
+
+    sectors_needed: int = (size_bytes + 511) / 512
+    if (sectors_needed == 0) {
+        sectors_needed = 1
+    }
+    start_sector: int = g_fs_next_data_sector
+
+    # g_fs_table_buf already holds the sector `found_slot` lives in --
+    # the scan above only re-reads at the start of each group of 8, so
+    # a mid-group break leaves the right sector's data in place.
+    entry_addr: int = g_fs_table_buf + (found_slot % 8) * 64
+    i: int = 0
+    while (i < 32) {
+        __pokeb(entry_addr + i, 0)
+        i += 1
+    }
+    nlen: int = kstrlen(name)
+    i = 0
+    while (i < nlen) {
+        __pokeb(entry_addr + i, __peekb(name + i))
+        i += 1
+    }
+    __poke(entry_addr + 32, start_sector)
+    __poke(entry_addr + 36, size_bytes)
+    __poke(entry_addr + 40, 1)
+
+    table_sector: int = 1 + found_slot / 8
+    ata_write_sector(table_sector, g_fs_table_buf)
+
+    g_fs_next_data_sector = start_sector + sectors_needed
+    g_fs_file_count += 1
+    fs_save_superblock()
+    return true
+}
+
+func fs_write(name: int, buf: int, size_bytes: int) -> bool {
+    fs_ensure_mounted()
+    if (not fs_find(name)) {
+        return false
+    }
+    if (size_bytes > g_fs_found_size) {
+        return false   # no growing past what fs_create reserved
+    }
+    sectors: int = (size_bytes + 511) / 512
+    s: int = 0
+    while (s < sectors) {
+        i: int = 0
+        while (i < 512) {
+            byte_idx: int = s * 512 + i
+            if (byte_idx < size_bytes) {
+                __pokeb(g_fs_sector_buf + i, __peekb(buf + byte_idx))
+            } else {
+                __pokeb(g_fs_sector_buf + i, 0)
+            }
+            i += 1
+        }
+        ata_write_sector(g_fs_found_start_sector + s, g_fs_sector_buf)
+        s += 1
+    }
+    return true
+}
+
+# Returns bytes read, or -1 if the file doesn't exist.
+func fs_read(name: int, buf: int, max_size: int) -> int {
+    fs_ensure_mounted()
+    if (not fs_find(name)) {
+        return -1
+    }
+    n: int = g_fs_found_size
+    if (n > max_size) {
+        n = max_size
+    }
+    sectors: int = (n + 511) / 512
+    s: int = 0
+    while (s < sectors) {
+        ata_read_sector(g_fs_found_start_sector + s, g_fs_sector_buf)
+        i: int = 0
+        while (i < 512) {
+            byte_idx: int = s * 512 + i
+            if (byte_idx < n) {
+                __pokeb(buf + byte_idx, __peekb(g_fs_sector_buf + i))
+            }
+            i += 1
+        }
+        s += 1
+    }
+    return n
+}
+
+func fs_list() -> void {
+    fs_ensure_mounted()
+    vga_print("files:\n")
+    slot: int = 0
+    any_found: bool = false
+    while (slot < FS_MAX_FILES) {
+        table_sector: int = 1 + slot / 8
+        offset: int = (slot % 8) * 64
+        if (offset == 0) {
+            ata_read_sector(table_sector, g_fs_table_buf)
+        }
+        entry_addr: int = g_fs_table_buf + offset
+        used: int = __peek(entry_addr + 40)
+        if (used == 1) {
+            any_found = true
+            vga_print("  ")
+            i: int = 0
+            while (i < 32) {
+                c: int = __peekb(entry_addr + i)
+                if (c == 0) {
+                    break
+                }
+                vga_putc(c)
+                i += 1
+            }
+            size: int = __peek(entry_addr + 36)
+            vga_print("  (")
+            vga_print_dec(size)
+            vga_print(" bytes)\n")
+        }
+        slot += 1
+    }
+    if (not any_found) {
+        vga_print("  (empty)\n")
+    }
+}

@@ -1,0 +1,96 @@
+# pci.fl — PCI bus enumeration via config space mechanism 1
+#
+# falconc has no 32-bit port I/O intrinsic (__inb/__outb are byte-only
+# -- same limitation ata.s works around with `rep insw`/`outsw`), but
+# CONFIG_ADDRESS (0xCF8) and CONFIG_DATA (0xCFC) are legitimately
+# byte-addressable at their four sub-ports each (0xCF8-0xCFB,
+# 0xCFC-0xCFF) per the PCI spec, so four byte writes/reads assemble
+# the same 32-bit access a single dword instruction would -- no asm
+# needed here, unlike ata.s where faking a word access really would
+# have been unreliable.
+#
+# Brute-force scans all 256 buses, 32 devices, 8 functions -- slow-ish
+# (tens of thousands of config reads) but simple and correct, and
+# "slow" here means tens of milliseconds, not something worth
+# optimizing before it's ever been run once.
+
+func pci_config_address(bus: int, dev: int, fn: int, offset: int) -> int {
+    return 0x80000000 | (bus << 16) | (dev << 11) | (fn << 8) | (offset & 0xFC)
+}
+
+func pci_write_address(addr: int) -> void {
+    __outb(0xCF8, addr & 0xFF)
+    __outb(0xCF9, (addr >> 8) & 0xFF)
+    __outb(0xCFA, (addr >> 16) & 0xFF)
+    __outb(0xCFB, (addr >> 24) & 0xFF)
+}
+
+func pci_config_read32(bus: int, dev: int, fn: int, offset: int) -> int {
+    pci_write_address(pci_config_address(bus, dev, fn, offset))
+    b0: int = __inb(0xCFC)
+    b1: int = __inb(0xCFD)
+    b2: int = __inb(0xCFE)
+    b3: int = __inb(0xCFF)
+    return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+}
+
+func pci_report_device(bus: int, dev: int, fn: int) -> void {
+    vendev: int = pci_config_read32(bus, dev, fn, 0x00)
+    vendor: int = vendev & 0xFFFF
+    device: int = (vendev >> 16) & 0xFFFF
+
+    classreg: int = pci_config_read32(bus, dev, fn, 0x08)
+    class_code: int = (classreg >> 24) & 0xFF
+    subclass: int = (classreg >> 16) & 0xFF
+
+    vga_print("  ")
+    vga_print_dec(bus)
+    vga_print(":")
+    vga_print_dec(dev)
+    vga_print(".")
+    vga_print_dec(fn)
+    vga_print("  vendor=")
+    vga_print_hex(vendor)
+    vga_print(" device=")
+    vga_print_hex(device)
+    vga_print(" class=")
+    vga_print_hex(class_code)
+    vga_print(" subclass=")
+    vga_print_hex(subclass)
+    vga_print("\n")
+}
+
+func pci_scan() -> void {
+    vga_print("PCI devices:\n")
+    any_found: bool = false
+    bus: int = 0
+    while (bus < 256) {
+        dev: int = 0
+        while (dev < 32) {
+            vendev: int = pci_config_read32(bus, dev, 0, 0x00)
+            vendor: int = vendev & 0xFFFF
+            if (vendor != 0xFFFF) {
+                any_found = true
+                pci_report_device(bus, dev, 0)
+
+                hdr: int = pci_config_read32(bus, dev, 0, 0x0C)
+                header_type: int = (hdr >> 16) & 0xFF
+                if ((header_type & 0x80) != 0) {
+                    fn: int = 1
+                    while (fn < 8) {
+                        vd2: int = pci_config_read32(bus, dev, fn, 0x00)
+                        if ((vd2 & 0xFFFF) != 0xFFFF) {
+                            pci_report_device(bus, dev, fn)
+                        }
+                        fn += 1
+                    }
+                }
+            }
+            dev += 1
+        }
+        bus += 1
+    }
+    if (not any_found) {
+        vga_print("  (none found)\n")
+    }
+}

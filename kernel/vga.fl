@@ -66,6 +66,21 @@ func vga_putc(c: int) -> void {
     }
 }
 
+# Erase the character before the cursor and move the cursor back onto
+# it. Does not walk back across a line boundary -- backspacing at
+# column 0 is a no-op, matching how most simple line editors behave
+# rather than trying to merge with the previous line.
+func vga_backspace() -> void {
+    if (g_vga_col == 0) {
+        return
+    }
+    g_vga_col -= 1
+    offset: int = (g_vga_row * 80 + g_vga_col) * 2
+    cell: int = 0xB8000 + offset
+    __pokeb(cell, 0x20)
+    __pokeb(cell + 1, g_vga_attr)
+}
+
 func vga_print(s: int) -> void {
     i: int = 0
     while (true) {
