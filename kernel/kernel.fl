@@ -48,6 +48,9 @@ func main(mb_magic: int, mb_info: int) -> void {
     idt_init()
     vga_print("[ok] IDT loaded, 48 vectors installed\n")
 
+    paging_init()
+    vga_print("[ok] paging enabled, 0-16 MiB identity-mapped\n")
+
     pic_remap()
     vga_print("[ok] PIC remapped to 0x20-0x2F\n")
 

@@ -96,6 +96,9 @@ isr_common_stub:
     movw  %ax, %fs
     movw  %ax, %gs
 
+    movl  %cr2, %eax           # only meaningful for #PF (vector 14), but
+    movl  %eax, _gv_g_cr2      # cheap enough to always capture
+
     movl  36(%esp), %eax       # int_no
     movl  40(%esp), %ebx       # err_code
     pushl %ebx

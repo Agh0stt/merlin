@@ -23,6 +23,15 @@ g_pmm_kernel_end: int = 0x00300000      # generous ceiling for the kernel image 
 g_pmm_heap_start: int = 0x00400000      # must match kstd.fl's KHEAP_START
 g_pmm_heap_end: int = 0x00800000        # must match kstd.fl's KHEAP_END
 
+# paging.s currently identity-maps only 0-16 MiB (4 page tables). Until
+# there's a real VMM that can map additional frames on demand,
+# pmm_alloc_frame() must never hand out anything above that or the
+# very next write to it page-faults. Detected RAM can be (and here,
+# is) much larger than this -- g_pmm_total_pages/free_pages still
+# reflect the true physical size for the boot banner, only allocation
+# is capped.
+g_pmm_map_limit_pages: int = 4096       # 16 MiB / 4 KiB
+
 func pmm_bit_mask(bit: int) -> int {
     mask: int = 1
     i: int = 0
@@ -203,8 +212,12 @@ func pmm_init(mb_info: int) -> int {
 }
 
 func pmm_alloc_frame() -> int {
+    limit: int = g_pmm_total_pages
+    if (g_pmm_map_limit_pages < limit) {
+        limit = g_pmm_map_limit_pages
+    }
     i: int = 0
-    while (i < g_pmm_total_pages) {
+    while (i < limit) {
         if (not pmm_test_bit(i)) {
             pmm_set_bit(i)
             g_pmm_free_pages -= 1

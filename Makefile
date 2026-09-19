@@ -19,7 +19,7 @@ falconc: $(FALCONC)
 $(FALCONC): $(FALCON_SRC)
 	gcc -O2 -w -o $(FALCONC) $(FALCON_SRC)
 
-KFL_SRCS = kernel/kernel.fl kernel/kstd.fl kernel/vga.fl kernel/interrupts.fl kernel/pic.fl kernel/keyboard.fl
+KFL_SRCS = kernel/kernel.fl kernel/kstd.fl kernel/vga.fl kernel/interrupts.fl kernel/pic.fl kernel/keyboard.fl kernel/pmm.fl
 
 kernel/kernel.s: $(KFL_SRCS) $(FALCONC)
 	$(FALCONC) kernel/kernel.fl --freestanding -Ikernel -o kernel/kernel.s
@@ -33,8 +33,11 @@ boot/boot.o: boot/boot.s
 boot/glue.o: boot/glue.s boot/idt_stubs.s
 	$(AS) boot/glue.s -o boot/glue.o
 
-kestrel.elf: boot/boot.o boot/glue.o kernel/kernel.o boot/link.ld
-	$(LD) -T boot/link.ld boot/boot.o boot/glue.o kernel/kernel.o -o kestrel.elf
+boot/paging.o: boot/paging.s
+	$(AS) boot/paging.s -o boot/paging.o
+
+kestrel.elf: boot/boot.o boot/glue.o boot/paging.o kernel/kernel.o boot/link.ld
+	$(LD) -T boot/link.ld boot/boot.o boot/glue.o boot/paging.o kernel/kernel.o -o kestrel.elf
 
 iso: kestrel.elf
 	mkdir -p iso/boot/grub

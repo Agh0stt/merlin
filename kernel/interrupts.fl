@@ -28,6 +28,9 @@ g_ex16: str = ""
 g_ex17: str = ""
 g_exu: str = ""
 
+g_cr2: int = 0     # written by glue.s's isr_common_stub on every exception;
+                   # only meaningful for #PF (vector 14)
+
 g_tick_count: int = 0
 
 func interrupts_init() -> void {
@@ -77,9 +80,23 @@ func isr_handler(int_no: int, err_code: int) -> void {
     vga_print_dec(int_no)
     vga_print(": ")
     vga_print(exception_name(int_no))
-    vga_print(" ***\n    error code: ")
-    vga_print_hex(err_code)
-    vga_print("\n    system halted.\n")
+    vga_print(" ***\n")
+    if (int_no == 14) {
+        vga_print("    faulting address: ")
+        vga_print_hex(g_cr2)
+        vga_print("\n    present=")
+        vga_print_dec(err_code & 1)
+        vga_print(" write=")
+        vga_print_dec((err_code >> 1) & 1)
+        vga_print(" user=")
+        vga_print_dec((err_code >> 2) & 1)
+        vga_print("\n")
+    } else {
+        vga_print("    error code: ")
+        vga_print_hex(err_code)
+        vga_print("\n")
+    }
+    vga_print("    system halted.\n")
     __cli()
     while (true) {
         __hlt()
