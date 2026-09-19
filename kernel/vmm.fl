@@ -1,0 +1,93 @@
+# vmm.fl — virtual memory manager
+#
+# paging.s builds and enables a fixed identity map for the first
+# 16 MiB and hands Falcon the page directory's physical address in
+# g_page_dir. Everything past that -- walking the directory, creating
+# page tables on demand, mapping/unmapping arbitrary pages -- is
+# ordinary memory-mapped struct manipulation, so it lives here in
+# Falcon rather than in more asm.
+#
+# One simplification this stage leans on: pmm_alloc_frame() is still
+# capped to the identity-mapped 16 MiB (see pmm.fl), so any physical
+# frame this file gets back to use as a new page table is *already*
+# accessible at its own physical address -- no chicken-and-egg
+# problem of needing a mapping to write the very table that would
+# provide one.
+
+g_page_dir: int = 0   # written by paging.s's paging_init(), physical address
+
+func vmm_zero_page(phys: int) -> void {
+    i: int = 0
+    while (i < 1024) {
+        __poke(phys + i * 4, 0)
+        i += 1
+    }
+}
+
+# Returns the physical address of the PTE for vaddr, allocating and
+# zeroing a new page table (via pmm_alloc_frame) if the covering PDE
+# isn't present yet.
+func vmm_get_pte_addr(vaddr: int) -> int {
+    pd_index: int = (vaddr >> 22) & 0x3FF
+    pt_index: int = (vaddr >> 12) & 0x3FF
+    pde_addr: int = g_page_dir + pd_index * 4
+    pde: int = __peek(pde_addr)
+    pt_phys: int = 0
+
+    if ((pde & 1) == 0) {
+        pt_phys = pmm_alloc_frame()
+        vmm_zero_page(pt_phys)
+        __poke(pde_addr, (pt_phys & 0xFFFFF000) | 0x3)   # present + rw
+    } else {
+        pt_phys = pde & 0xFFFFF000
+    }
+
+    return pt_phys + pt_index * 4
+}
+
+# flags: PAGE_RW=0x2, PAGE_USER=0x4 (unused until there's a userland).
+# PAGE_PRESENT (0x1) is always set here -- there's no separate "mapped
+# but not present" concept exposed yet.
+func vmm_map(vaddr: int, paddr: int, flags: int) -> void {
+    pte_addr: int = vmm_get_pte_addr(vaddr)
+    __poke(pte_addr, (paddr & 0xFFFFF000) | (flags | 0x1))
+    invlpg(vaddr)
+}
+
+func vmm_unmap(vaddr: int) -> void {
+    pte_addr: int = vmm_get_pte_addr(vaddr)
+    __poke(pte_addr, 0)
+    invlpg(vaddr)
+}
+
+# Returns the mapped physical address for vaddr, or -1 if unmapped.
+# Does NOT allocate a page table as a side effect (unlike
+# vmm_get_pte_addr) -- a pure query has no business creating state.
+func vmm_get_phys(vaddr: int) -> int {
+    pd_index: int = (vaddr >> 22) & 0x3FF
+    pde: int = __peek(g_page_dir + pd_index * 4)
+    if ((pde & 1) == 0) {
+        return -1
+    }
+    pt_index: int = (vaddr >> 12) & 0x3FF
+    pt_phys: int = pde & 0xFFFFF000
+    pte: int = __peek(pt_phys + pt_index * 4)
+    if ((pte & 1) == 0) {
+        return -1
+    }
+    return (pte & 0xFFFFF000) | (vaddr & 0xFFF)
+}
+
+# Maps virt == phys for every page in [phys_start, phys_start+len).
+# Used at boot to extend the identity map past paging.s's initial
+# 16 MiB once the PMM knows how much RAM is actually there.
+func vmm_identity_map_region(phys_start: int, len: int) -> void {
+    start_page: int = phys_start / 4096
+    end_page: int = (phys_start + len + 4095) / 4096
+    p: int = start_page
+    while (p < end_page) {
+        addr: int = p * 4096
+        vmm_map(addr, addr, 0x2)   # present + rw
+        p += 1
+    }
+}

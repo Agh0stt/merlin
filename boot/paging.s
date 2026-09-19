@@ -68,6 +68,7 @@ paging_init:
 .pg_tables_done:
 
     movl  $page_directory, %eax
+    movl  %eax, _gv_g_page_dir  # so Falcon's vmm.fl can walk/extend this
     movl  %eax, %cr3
 
     movl  %cr0, %eax
@@ -78,4 +79,14 @@ paging_init:
     popl  %edi
     popl  %esi
     popl  %ebx
+    ret
+
+# invlpg(addr) -- flush a single TLB entry after a mapping change.
+# vmm.fl calls this after every vmm_map()/vmm_unmap(); skipping it is
+# the kind of bug that only shows up as stale-looking memory much
+# later, not as a crash right where the mistake was made.
+.globl invlpg
+invlpg:
+    movl  4(%esp), %eax
+    invlpg (%eax)
     ret

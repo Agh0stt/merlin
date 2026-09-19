@@ -11,6 +11,7 @@ import "interrupts"
 import "pic"
 import "keyboard"
 import "pmm"
+import "vmm"
 
 func main(mb_magic: int, mb_info: int) -> void {
     kheap_init()
@@ -21,7 +22,7 @@ func main(mb_magic: int, mb_info: int) -> void {
     vga_set_color(0x0F)
     vga_print("MerlinOS\n")
     vga_set_color(0x07)
-    vga_print("Kestrel kernel -- stage 2\n\n")
+    vga_print("Kestrel kernel -- stage 4\n\n")
 
     vga_set_color(0x0A)
     vga_print("[ok] VGA text driver\n")
@@ -82,6 +83,23 @@ func main(mb_magic: int, mb_info: int) -> void {
     vga_print_dec(g_pmm_free_pages * 4 / 1024)
     vga_print(" MiB)\n")
 
+    # paging.s only identity-mapped the first 16 MiB at boot -- now
+    # that the PMM knows the real amount of RAM, extend the identity
+    # map to cover all of it (page tables for the new range come from
+    # pmm_alloc_frame(), still capped to the original 16 MiB pool at
+    # this point -- see vmm.fl). Only then is it safe to let
+    # pmm_alloc_frame() hand out anything past 16 MiB.
+    true_highest: int = g_pmm_total_pages * 4096
+    if (true_highest > 0x01000000) {
+        vmm_identity_map_region(0x01000000, true_highest - 0x01000000)
+        g_pmm_map_limit_pages = g_pmm_total_pages
+        vga_print("[ok] VMM extended identity map to ")
+        vga_print_dec(true_highest / 1024 / 1024)
+        vga_print(" MiB, ")
+        vga_print_dec(g_pmm_map_limit_pages)
+        vga_print(" pages now allocatable\n")
+    }
+
     # sanity check: alloc a couple of frames, confirm they're distinct
     # and marked used, then give one back
     f1: int = pmm_alloc_frame()
@@ -93,6 +111,22 @@ func main(mb_magic: int, mb_info: int) -> void {
     vga_print_hex(f2)
     vga_print("\n")
     pmm_free_frame(f1)
+
+    # prove the extended mapping is real, not just "trust me" -- test
+    # a specific address well above the old 16 MiB ceiling directly.
+    # (pmm_alloc_frame() is first-fit from page 0, so with this much
+    # free low memory it would essentially never wander up here on
+    # its own to exercise this path.)
+    if (true_highest > 0x02100000) {
+        probe: int = 0x02000000   # 32 MiB
+        __poke(probe, 0xDEADBEEF)
+        readback: int = __peek(probe)
+        vga_print("[ok] wrote+read ")
+        vga_print_hex(probe)
+        vga_print(" (above old 16 MiB cap) -> ")
+        vga_print_hex(readback)
+        vga_print("\n")
+    }
 
     vga_set_color(0x08)
     vga_print("\ntype something:\n")

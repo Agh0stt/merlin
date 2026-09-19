@@ -19,7 +19,7 @@ falconc: $(FALCONC)
 $(FALCONC): $(FALCON_SRC)
 	gcc -O2 -w -o $(FALCONC) $(FALCON_SRC)
 
-KFL_SRCS = kernel/kernel.fl kernel/kstd.fl kernel/vga.fl kernel/interrupts.fl kernel/pic.fl kernel/keyboard.fl kernel/pmm.fl
+KFL_SRCS = kernel/kernel.fl kernel/kstd.fl kernel/vga.fl kernel/interrupts.fl kernel/pic.fl kernel/keyboard.fl kernel/pmm.fl kernel/vmm.fl
 
 kernel/kernel.s: $(KFL_SRCS) $(FALCONC)
 	$(FALCONC) kernel/kernel.fl --freestanding -Ikernel -o kernel/kernel.s
