@@ -4,8 +4,9 @@
 # GRUB loads this as a multiboot kernel. On entry:
 #   eax = multiboot magic (0x2BADB002)
 #   ebx = pointer to multiboot info struct
-# We stash both where Falcon can read them, set up our own stack,
-# then call into Falcon's main(). main() never returns in
+# We set up our own stack, then call main(magic, info) -- Falcon
+# functions take normal params, so no more stashing these in globals
+# for Falcon to __peek() back out. main() never returns in
 # --freestanding mode (falconc emits an automatic cli/hlt loop at
 # the end of it), so there is nothing to do after the call.
 
@@ -27,14 +28,6 @@ stack_bottom:
     .skip 16384                # 16 KiB kernel stack
 stack_top:
 
-    .section .data
-.globl mb_magic
-mb_magic:
-    .long 0
-.globl mb_info
-mb_info:
-    .long 0
-
     .section .text
 .globl _start
 _start:
@@ -42,9 +35,8 @@ _start:
     movl $stack_top, %esp
     movl %esp, %ebp
 
-    movl %eax, mb_magic         # stash for Falcon to __peek() if it ever needs them
-    movl %ebx, mb_info
-
+    pushl %ebx                  # arg 2: multiboot info pointer
+    pushl %eax                  # arg 1: multiboot magic
     call  main                  # never returns (freestanding main ends in hlt loop)
 
 .hang:

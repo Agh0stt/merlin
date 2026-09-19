@@ -23,6 +23,8 @@ SECTIONS {
         *(.bss)
     }
 
+    kernel_end = ALIGN(4096);
+
     /DISCARD/ : {
         *(.comment)
         *(.note*)

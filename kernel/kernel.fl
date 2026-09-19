@@ -1,14 +1,18 @@
 # kernel.fl — Kestrel, the MerlinOS kernel
 # Entry point called directly by boot.s (no libc, no _flr_* runtime,
-# nothing but what kstd.fl provides).
+# nothing but what kstd.fl provides). boot.s now passes the multiboot
+# magic and info pointer as real args (Falcon functions take normal
+# params fine, main() is no exception -- no more stashing them in
+# globals for us to __peek() back out).
 
 import "kstd"
 import "vga"
 import "interrupts"
 import "pic"
 import "keyboard"
+import "pmm"
 
-func main() -> void {
+func main(mb_magic: int, mb_info: int) -> void {
     kheap_init()
     vga_clear()
     interrupts_init()
@@ -17,7 +21,7 @@ func main() -> void {
     vga_set_color(0x0F)
     vga_print("MerlinOS\n")
     vga_set_color(0x07)
-    vga_print("Kestrel kernel -- stage 1\n\n")
+    vga_print("Kestrel kernel -- stage 2\n\n")
 
     vga_set_color(0x0A)
     vga_print("[ok] VGA text driver\n")
@@ -52,6 +56,40 @@ func main() -> void {
 
     __sti()
     vga_print("[ok] interrupts enabled\n")
+
+    if (mb_magic != 0x2BADB002) {
+        vga_set_color(0x0E)
+        vga_print("[!!] bad multiboot magic ")
+        vga_print_hex(mb_magic)
+        vga_print(" -- not booted via GRUB/multiboot?\n")
+    }
+
+    highest: int = pmm_init(mb_info)
+    vga_set_color(0x0A)
+    if (highest == 0) {
+        vga_set_color(0x0E)
+        vga_print("[!!] no multiboot memory map -- used mem_upper fallback\n")
+        vga_set_color(0x0A)
+    }
+    vga_print("[ok] PMM initialised, ")
+    vga_print_dec(g_pmm_total_pages)
+    vga_print(" pages total, ")
+    vga_print_dec(g_pmm_free_pages)
+    vga_print(" free (")
+    vga_print_dec(g_pmm_free_pages * 4 / 1024)
+    vga_print(" MiB)\n")
+
+    # sanity check: alloc a couple of frames, confirm they're distinct
+    # and marked used, then give one back
+    f1: int = pmm_alloc_frame()
+    f2: int = pmm_alloc_frame()
+    vga_set_color(0x0F)
+    vga_print("[ok] pmm_alloc_frame -> ")
+    vga_print_hex(f1)
+    vga_print(", ")
+    vga_print_hex(f2)
+    vga_print("\n")
+    pmm_free_frame(f1)
 
     vga_set_color(0x08)
     vga_print("\ntype something:\n")
