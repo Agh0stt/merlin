@@ -4,15 +4,20 @@
 
 import "kstd"
 import "vga"
+import "interrupts"
+import "pic"
+import "keyboard"
 
 func main() -> void {
     kheap_init()
     vga_clear()
+    interrupts_init()
+    keyboard_init()
 
     vga_set_color(0x0F)
     vga_print("MerlinOS\n")
     vga_set_color(0x07)
-    vga_print("Kestrel kernel -- stage 0\n\n")
+    vga_print("Kestrel kernel -- stage 1\n\n")
 
     vga_set_color(0x0A)
     vga_print("[ok] VGA text driver\n")
@@ -20,7 +25,6 @@ func main() -> void {
     vga_print_hex(0x00400000)
     vga_print("\n")
 
-    # sanity check: allocator + arrays + arithmetic all actually work
     nums: [int] = [10, 20, 30, 40]
     sum: int = 0
     i: int = 0
@@ -33,6 +37,27 @@ func main() -> void {
     vga_print_dec(sum)
     vga_print("\n")
 
+    gdt_init()
+    vga_set_color(0x0A)
+    vga_print("[ok] GDT loaded\n")
+
+    idt_init()
+    vga_print("[ok] IDT loaded, 48 vectors installed\n")
+
+    pic_remap()
+    vga_print("[ok] PIC remapped to 0x20-0x2F\n")
+
+    pit_init(100)
+    vga_print("[ok] PIT set to 100 Hz\n")
+
+    __sti()
+    vga_print("[ok] interrupts enabled\n")
+
     vga_set_color(0x08)
-    vga_print("\nsystem idle.\n")
+    vga_print("\ntype something:\n")
+    vga_set_color(0x0F)
+
+    while (true) {
+        __hlt()
+    }
 }

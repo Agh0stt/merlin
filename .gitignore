@@ -1,0 +1,7 @@
+# build artifacts -- always regenerable via `make`
+*.o
+kernel/kernel.s
+kestrel.elf
+merlinos.iso
+iso/
+falcon/falconc

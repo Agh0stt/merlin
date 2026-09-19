@@ -1,0 +1,68 @@
+# pic.fl — 8259 PIC remap + 8253/8254 PIT init
+#
+# The PIC's default vectors (0x08-0x0F, 0x70-0x77) overlap CPU
+# exceptions, so IRQ0-15 get remapped to 0x20-0x2F (32-47) before
+# anything unmasks them -- otherwise a spurious IRQ looks exactly like
+# a CPU exception and you'll spend an afternoon debugging the wrong
+# thing.
+
+func pic_remap() -> void {
+    m_mask: int = __inb(0x21)
+    s_mask: int = __inb(0xA1)
+
+    __outb(0x20, 0x11)   # ICW1: begin init, expect ICW4
+    __outb(0xA0, 0x11)
+
+    __outb(0x21, 0x20)   # ICW2: master offset -> 0x20 (32)
+    __outb(0xA1, 0x28)   # ICW2: slave offset  -> 0x28 (40)
+
+    __outb(0x21, 0x04)   # ICW3: master has slave on IRQ2
+    __outb(0xA1, 0x02)   # ICW3: slave's cascade identity
+
+    __outb(0x21, 0x01)   # ICW4: 8086 mode
+    __outb(0xA1, 0x01)
+
+    __outb(0x21, m_mask) # restore masks (nothing unmasked yet)
+    __outb(0xA1, s_mask)
+}
+
+func pic_set_mask(irq: int) -> void {
+    port: int = 0x21
+    if (irq >= 8) {
+        port = 0xA1
+        irq -= 8
+    }
+    cur: int = __inb(port)
+    bit: int = 1
+    i: int = 0
+    while (i < irq) {
+        bit = bit * 2
+        i += 1
+    }
+    __outb(port, cur | bit)
+}
+
+func pic_clear_mask(irq: int) -> void {
+    port: int = 0x21
+    if (irq >= 8) {
+        port = 0xA1
+        irq -= 8
+    }
+    cur: int = __inb(port)
+    bit: int = 1
+    i: int = 0
+    while (i < irq) {
+        bit = bit * 2
+        i += 1
+    }
+    __outb(port, cur & ~bit)
+}
+
+# PIT channel 0, mode 3 (square wave), rate generator divisor for a
+# given frequency. Base input clock is 1193182 Hz.
+func pit_init(hz: int) -> void {
+    divisor: int = 1193182 / hz
+    __outb(0x43, 0x36)                    # channel 0, lo/hi, mode 3
+    __outb(0x40, divisor & 0xFF)
+    __outb(0x40, (divisor >> 8) & 0xFF)
+}

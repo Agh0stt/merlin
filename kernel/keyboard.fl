@@ -1,0 +1,38 @@
+# keyboard.fl — PS/2 keyboard, IRQ1, scancode set 1
+#
+# Stage 1: just enough to prove the interrupt actually fires and to
+# echo what's typed to the screen. No modifier-key state, no
+# scancode-release handling beyond dropping it, no input buffer yet.
+
+g_kbd_us_lower: [int] = [0]
+
+func keyboard_init() -> void {
+    # scancode -> ASCII for the lowercase US layout, index = scancode.
+    # Built at runtime for the same reason every other table in this
+    # kernel is: array literals need a live heap allocator, and this
+    # one is too long to worry about hand-placing in .rodata.
+    tbl: [int] = [
+        0,27,49,50,51,52,53,54,55,56,57,48,45,61,8,9,
+        113,119,101,114,116,121,117,105,111,112,91,93,10,0,97,115,
+        100,102,103,104,106,107,108,59,39,96,0,92,122,120,99,118,
+        98,110,109,44,46,47,0,42,0,32,0,0,0,0,0,0,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    ]
+    g_kbd_us_lower = tbl
+}
+
+func keyboard_handle() -> void {
+    sc: int = __inb(0x60)
+    if (sc >= 0x80) {
+        return  # key-release, ignore for now
+    }
+    if (sc >= 90) {
+        return  # past the end of our table
+    }
+    c: int = g_kbd_us_lower[sc]
+    if (c != 0) {
+        vga_set_color(0x0F)
+        vga_putc(c)
+    }
+}

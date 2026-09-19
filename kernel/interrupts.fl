@@ -1,0 +1,101 @@
+# interrupts.fl — exception (ISR) and IRQ dispatch, Falcon side.
+#
+# glue.s builds the IDT and calls these two functions by name for
+# every vector it knows about. Nothing here touches lgdt/lidt/iret --
+# that machinery lives in glue.s because Falcon has no way to express
+# it; this file only decides what an interrupt *means*.
+#
+# NOTE: as everywhere else in freestanding mode, the string globals
+# below are NULL at boot (global initializers are dropped) --
+# interrupts_init() assigns each one for real before any exception
+# can fire.
+
+g_ex0: str = ""
+g_ex1: str = ""
+g_ex2: str = ""
+g_ex3: str = ""
+g_ex4: str = ""
+g_ex5: str = ""
+g_ex6: str = ""
+g_ex7: str = ""
+g_ex8: str = ""
+g_ex10: str = ""
+g_ex11: str = ""
+g_ex12: str = ""
+g_ex13: str = ""
+g_ex14: str = ""
+g_ex16: str = ""
+g_ex17: str = ""
+g_exu: str = ""
+
+g_tick_count: int = 0
+
+func interrupts_init() -> void {
+    g_ex0 = "Divide-by-zero"
+    g_ex1 = "Debug"
+    g_ex2 = "Non-maskable interrupt"
+    g_ex3 = "Breakpoint"
+    g_ex4 = "Overflow"
+    g_ex5 = "Bound range exceeded"
+    g_ex6 = "Invalid opcode"
+    g_ex7 = "Device not available"
+    g_ex8 = "Double fault"
+    g_ex10 = "Invalid TSS"
+    g_ex11 = "Segment not present"
+    g_ex12 = "Stack-segment fault"
+    g_ex13 = "General protection fault"
+    g_ex14 = "Page fault"
+    g_ex16 = "x87 floating point exception"
+    g_ex17 = "Alignment check"
+    g_exu = "Unknown exception"
+    g_tick_count = 0
+}
+
+func exception_name(int_no: int) -> str {
+    if (int_no == 0)  { return g_ex0 }
+    if (int_no == 1)  { return g_ex1 }
+    if (int_no == 2)  { return g_ex2 }
+    if (int_no == 3)  { return g_ex3 }
+    if (int_no == 4)  { return g_ex4 }
+    if (int_no == 5)  { return g_ex5 }
+    if (int_no == 6)  { return g_ex6 }
+    if (int_no == 7)  { return g_ex7 }
+    if (int_no == 8)  { return g_ex8 }
+    if (int_no == 10) { return g_ex10 }
+    if (int_no == 11) { return g_ex11 }
+    if (int_no == 12) { return g_ex12 }
+    if (int_no == 13) { return g_ex13 }
+    if (int_no == 14) { return g_ex14 }
+    if (int_no == 16) { return g_ex16 }
+    if (int_no == 17) { return g_ex17 }
+    return g_exu
+}
+
+func isr_handler(int_no: int, err_code: int) -> void {
+    vga_set_color(0x4F)
+    vga_print("\n\n*** EXCEPTION ")
+    vga_print_dec(int_no)
+    vga_print(": ")
+    vga_print(exception_name(int_no))
+    vga_print(" ***\n    error code: ")
+    vga_print_hex(err_code)
+    vga_print("\n    system halted.\n")
+    __cli()
+    while (true) {
+        __hlt()
+    }
+}
+
+func irq_handler(int_no: int) -> void {
+    if (int_no == 32) {
+        g_tick_count += 1
+    }
+    if (int_no == 33) {
+        keyboard_handle()
+    }
+
+    if (int_no >= 40) {
+        __outb(0xA0, 0x20)      # EOI to slave PIC
+    }
+    __outb(0x20, 0x20)          # EOI to master PIC
+}
