@@ -1,0 +1,110 @@
+# kmalloc.fl — free-list kernel heap allocator
+#
+# The original _flr_alloc (see git history / kstd.fl before this
+# file existed) was a bump allocator: fast, but it could never
+# reclaim memory and never checked whether it had run off the end of
+# its 4 MiB region -- doing so would have silently corrupted whatever
+# physical frame the PMM happened to have placed there next, since
+# that region is already identity-mapped, real RAM. This replaces it
+# with an ordinary first-fit free-list allocator that actually
+# bounds-checks and can reuse freed blocks.
+#
+# Every block, free or allocated, has an 8-byte header immediately
+# before the pointer callers see:
+#   offset 0: size    -- usable bytes in this block (not counting the header)
+#   offset 4: next    -- next block in the free list, or 0. Meaningless
+#                        once a block is handed out; only maintained
+#                        while a block is on the free list.
+#
+# No coalescing of adjacent free blocks yet -- freeing a block just
+# pushes it back onto the list head. Fine for now; if fragmentation
+# ever becomes a real problem (it will, once something allocates and
+# frees a lot of varying sizes) that's the next thing to add here,
+# not a rewrite.
+
+KMALLOC_HEADER_SIZE: int = 8
+KMALLOC_MIN_SPLIT: int = 16   # only split a block if the leftover is worth it
+
+g_kmalloc_base: int = 0
+g_kmalloc_size: int = 0
+g_kfree_head: int = 0
+
+func kheap_init() -> void {
+    g_kmalloc_base = 0x00400000   # must match pmm.fl's g_pmm_heap_start
+    g_kmalloc_size = 0x00400000   # 4 MiB -- must match pmm.fl's heap_end - heap_start
+
+    g_kfree_head = g_kmalloc_base
+    __poke(g_kfree_head, g_kmalloc_size - KMALLOC_HEADER_SIZE)
+    __poke(g_kfree_head + 4, 0)
+}
+
+func kmalloc_align(n: int) -> int {
+    return (n + 3) & ~3
+}
+
+func kmalloc(n: int) -> int {
+    want: int = kmalloc_align(n)
+    if (want < 4) {
+        want = 4
+    }
+
+    prev: int = 0
+    cur: int = g_kfree_head
+
+    while (cur != 0) {
+        size: int = __peek(cur)
+        next: int = __peek(cur + 4)
+
+        if (size >= want) {
+            if (size >= want + KMALLOC_HEADER_SIZE + KMALLOC_MIN_SPLIT) {
+                # split: shrink this block to exactly `want`, carve a
+                # new free block out of the remainder
+                remainder_addr: int = cur + KMALLOC_HEADER_SIZE + want
+                remainder_size: int = size - want - KMALLOC_HEADER_SIZE
+                __poke(remainder_addr, remainder_size)
+                __poke(remainder_addr + 4, next)
+                next = remainder_addr
+                __poke(cur, want)
+            }
+
+            # unlink `cur` from the free list (it's either fully used,
+            # or its remainder already took its place via `next` above)
+            if (prev == 0) {
+                g_kfree_head = next
+            } else {
+                __poke(prev + 4, next)
+            }
+
+            return cur + KMALLOC_HEADER_SIZE
+        }
+
+        prev = cur
+        cur = next
+    }
+
+    return 0   # heap exhausted -- caller must check
+}
+
+func kfree(ptr: int) -> void {
+    if (ptr == 0) {
+        return
+    }
+    block: int = ptr - KMALLOC_HEADER_SIZE
+    __poke(block + 4, g_kfree_head)
+    g_kfree_head = block
+}
+
+# Called automatically by the compiler wherever `[T]`, a struct literal,
+# or a struct variable declaration needs backing memory. A returned 0
+# here means the heap is exhausted -- callers of _flr_alloc (i.e. every
+# array/struct allocation site the compiler generates) don't currently
+# check for that, so running out shows up as a null-deref page fault
+# rather than a clean error. Worth revisiting once anything long-running
+# depends on arrays/structs surviving low-memory conditions.
+func _flr_alloc(n: int) -> int {
+    return kmalloc(n)
+}
+
+func _flr_free(ptr: int) -> void {
+    kfree(ptr)
+}
