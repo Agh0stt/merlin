@@ -13,6 +13,7 @@ func shell_init() -> void {
     stack_mem: int = kmalloc(SHELL_STACK_SIZE)
     stack_top: int = stack_mem + SHELL_STACK_SIZE
     task_spawn_shell(stack_top)
+    g_scheduling_active = true
 }
 
 func shell_cmd_len() -> int {

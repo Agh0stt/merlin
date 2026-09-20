@@ -33,6 +33,18 @@ g_cr2: int = 0     # written by glue.s's isr_common_stub on every exception;
 
 g_tick_count: int = 0
 
+# Preemption: the timer forces a yield() every PREEMPT_TICKS ticks
+# (at 100 Hz, 5 ticks = 50ms time slices) instead of only switching
+# when a task calls yield() itself -- a task that never yields
+# voluntarily still gets the CPU taken away from it.
+# g_scheduling_active must stay false until shell_init() has actually
+# built task 1's stack (see shell.fl/tasking.s); calling yield() any
+# earlier would switch into an uninitialized (zero) stack pointer and
+# crash immediately.
+PREEMPT_TICKS: int = 5
+g_preempt_counter: int = 0
+g_scheduling_active: bool = false
+
 func interrupts_init() -> void {
     g_ex0 = "Divide-by-zero"
     g_ex1 = "Debug"
@@ -104,9 +116,6 @@ func isr_handler(int_no: int, err_code: int) -> void {
 }
 
 func irq_handler(int_no: int) -> void {
-    if (int_no == 32) {
-        g_tick_count += 1
-    }
     if (int_no == 33) {
         keyboard_handle()
     }
@@ -114,5 +123,20 @@ func irq_handler(int_no: int) -> void {
     if (int_no >= 40) {
         __outb(0xA0, 0x20)      # EOI to slave PIC
     }
-    __outb(0x20, 0x20)          # EOI to master PIC
+    __outb(0x20, 0x20)          # EOI to master PIC -- sent before any
+                                 # possible yield() below, so the PIC
+                                 # is left clean regardless of how long
+                                 # other tasks run before this handler
+                                 # ever gets to return
+
+    if (int_no == 32) {
+        g_tick_count += 1
+        if (g_scheduling_active) {
+            g_preempt_counter += 1
+            if (g_preempt_counter >= PREEMPT_TICKS) {
+                g_preempt_counter = 0
+                yield()
+            }
+        }
+    }
 }

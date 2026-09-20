@@ -37,6 +37,17 @@ g_current_task:
 .globl yield
 yield:
     pushf
+    # Force IF=1 in the saved copy, unconditionally, regardless of
+    # what it actually was at the moment of the call. This matters
+    # because the timer's irq_handler calls yield() directly on every
+    # timer tick to force preemption -- and entering an interrupt gate
+    # auto-clears IF, so without this fix a task preempted mid-tick
+    # would resume, later, with interrupts permanently disabled. Every
+    # task in this kernel is meant to run with interrupts enabled the
+    # entire time it's not itself inside a handler; baking that
+    # invariant in here means yield() is safe to call from anywhere,
+    # cooperative or not, without the caller having to think about it.
+    orl   $0x200, (%esp)
     pusha
 
     movl  g_current_task, %eax
