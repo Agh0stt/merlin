@@ -9,12 +9,22 @@
 
     .section .data
     .align 8
+.globl gdt_start
 gdt_start:
     .quad 0                     # 0x00 null descriptor
-    .word 0xFFFF, 0x0000        # 0x08 code: limit=0xFFFFF base=0
+    .word 0xFFFF, 0x0000        # 0x08 kernel code: limit=0xFFFFF base=0
     .byte 0x00, 0x9A, 0xCF, 0x00
-    .word 0xFFFF, 0x0000        # 0x10 data: limit=0xFFFFF base=0
+    .word 0xFFFF, 0x0000        # 0x10 kernel data: limit=0xFFFFF base=0
     .byte 0x00, 0x92, 0xCF, 0x00
+    .word 0xFFFF, 0x0000        # 0x18 user code (DPL3): same range, ring3
+    .byte 0x00, 0xFA, 0xCF, 0x00
+    .word 0xFFFF, 0x0000        # 0x20 user data (DPL3): same range, ring3
+    .byte 0x00, 0xF2, 0xCF, 0x00
+    .quad 0                     # 0x28 TSS descriptor -- patched at runtime
+                                 # by tss_init() (usermode.s), since its
+                                 # base address is a relocatable symbol,
+                                 # same reasoning as isr_table's runtime
+                                 # patching below
 gdt_end:
 
 gdt_ptr:
@@ -31,6 +41,7 @@ isr_table:
 
     .section .bss
     .align 8
+.globl idt_start
 idt_start:
     .skip 256 * 8
 idt_ptr:

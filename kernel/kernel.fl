@@ -15,6 +15,7 @@ import "pmm"
 import "vmm"
 import "fs"
 import "pci"
+import "syscall"
 import "shell"
 
 func main(mb_magic: int, mb_info: int) -> void {
@@ -26,7 +27,7 @@ func main(mb_magic: int, mb_info: int) -> void {
     vga_set_color(0x0F)
     vga_print("MerlinOS\n")
     vga_set_color(0x07)
-    vga_print("Kestrel kernel -- stage 7\n\n")
+    vga_print("Kestrel kernel -- stage 8\n\n")
 
     vga_set_color(0x0A)
     vga_print("[ok] VGA text driver\n")
@@ -74,6 +75,10 @@ func main(mb_magic: int, mb_info: int) -> void {
 
     idt_init()
     vga_print("[ok] IDT loaded, 48 vectors installed\n")
+
+    tss_init()
+    idt_set_syscall_gate()
+    vga_print("[ok] TSS loaded, int 0x80 syscall gate installed (DPL3)\n")
 
     paging_init()
     vga_print("[ok] paging enabled, 0-16 MiB identity-mapped\n")

@@ -19,7 +19,7 @@ falconc: $(FALCONC)
 $(FALCONC): $(FALCON_SRC)
 	gcc -O2 -w -o $(FALCONC) $(FALCON_SRC)
 
-KFL_SRCS = kernel/kernel.fl kernel/kstd.fl kernel/kmalloc.fl kernel/vga.fl kernel/interrupts.fl kernel/pic.fl kernel/keyboard.fl kernel/pmm.fl kernel/vmm.fl kernel/fs.fl kernel/pci.fl kernel/shell.fl
+KFL_SRCS = kernel/kernel.fl kernel/kstd.fl kernel/kmalloc.fl kernel/vga.fl kernel/interrupts.fl kernel/pic.fl kernel/keyboard.fl kernel/pmm.fl kernel/vmm.fl kernel/fs.fl kernel/pci.fl kernel/shell.fl kernel/syscall.fl
 
 kernel/kernel.s: $(KFL_SRCS) $(FALCONC)
 	$(FALCONC) kernel/kernel.fl --freestanding -Ikernel -o kernel/kernel.s
@@ -42,7 +42,18 @@ boot/tasking.o: boot/tasking.s
 boot/ata.o: boot/ata.s
 	$(AS) boot/ata.s -o boot/ata.o
 
-BOOT_OBJS = boot/boot.o boot/glue.o boot/paging.o boot/tasking.o boot/ata.o
+# usermode_test.bin must exist before usermode.s is assembled, since
+# usermode.s pulls it in with .incbin.
+boot/usermode_test.o: boot/usermode_test.s
+	$(AS) boot/usermode_test.s -o boot/usermode_test.o
+
+boot/usermode_test.bin: boot/usermode_test.o
+	objcopy -O binary boot/usermode_test.o boot/usermode_test.bin
+
+boot/usermode.o: boot/usermode.s boot/usermode_test.bin
+	$(AS) boot/usermode.s -o boot/usermode.o
+
+BOOT_OBJS = boot/boot.o boot/glue.o boot/paging.o boot/tasking.o boot/ata.o boot/usermode.o
 
 kestrel.elf: $(BOOT_OBJS) kernel/kernel.o boot/link.ld
 	$(LD) -T boot/link.ld $(BOOT_OBJS) kernel/kernel.o -o kestrel.elf
@@ -60,5 +71,5 @@ run-direct: kestrel.elf
 	qemu-system-i386 -kernel kestrel.elf
 
 clean:
-	rm -f boot/*.o kernel/*.o kernel/kernel.s kestrel.elf merlinos.iso
+	rm -f boot/*.o boot/usermode_test.bin kernel/*.o kernel/kernel.s kestrel.elf merlinos.iso
 	rm -rf iso

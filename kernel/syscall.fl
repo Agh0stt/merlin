@@ -1,0 +1,89 @@
+# syscall.fl — syscall dispatch and the usermode init/launch path
+#
+# The actual privilege transition (TSS, GDT patching, iret into ring
+# 3, the int 0x80 entry stub) lives in usermode.s -- see that file for
+# why this is scoped as a one-shot demo rather than scheduler
+# integration. This file is what decides what a syscall *means*, and
+# owns setting up the one sandboxed page pair the demo program runs
+# in.
+
+SYS_WRITE_CHAR: int = 1
+SYS_EXIT: int = 2
+
+PAGE_PRESENT: int = 0x1
+PAGE_RW: int = 0x2
+PAGE_USER: int = 0x4
+
+USER_CODE_VADDR: int = 0x02000000   # 32 MiB -- clear of the kernel,
+                                     # heap, and PMM's allocatable
+                                     # range at the time this was
+                                     # written; see pmm.fl for what's
+                                     # actually reserved
+USER_STACK_VADDR: int = 0x02001000  # the very next page
+
+g_user_test_blob_addr: int = 0
+g_user_test_blob_size: int = 0
+
+func syscall_dispatch(num: int, arg1: int) -> void {
+    if (num == SYS_WRITE_CHAR) {
+        vga_putc(arg1)
+        return
+    }
+    if (num == SYS_EXIT) {
+        # A real exit would hand control back to whatever called into
+        # this program -- but jump_to_usermode() is a one-way iret,
+        # not a call the scheduler tracks, and this syscall runs on
+        # the TSS's dedicated kernel stack, not any task's registered
+        # stack in tasking.s's g_task_esp. Calling yield() from here
+        # would save *this* throwaway stack into whatever
+        # g_current_task happens to be, permanently corrupting that
+        # task's real saved state. Halting is the honest thing to do
+        # until usermode is actually integrated with the scheduler.
+        vga_set_color(0x0A)
+        vga_print("\n[usermode program exited via syscall -- halted]\n")
+        vga_set_color(0x0F)
+        __cli()
+        while (true) {
+            __hlt()
+        }
+    }
+}
+
+func usertest_run() -> void {
+    if (g_user_test_blob_size == 0) {
+        get_user_test_blob_info()
+    }
+
+    code_phys: int = pmm_alloc_frame()
+    stack_phys: int = pmm_alloc_frame()
+    if (code_phys < 0) {
+        vga_set_color(0x0E)
+        vga_print("usertest: out of physical memory\n")
+        vga_set_color(0x0F)
+        return
+    }
+    if (stack_phys < 0) {
+        vga_set_color(0x0E)
+        vga_print("usertest: out of physical memory\n")
+        vga_set_color(0x0F)
+        return
+    }
+
+    vmm_map(USER_CODE_VADDR, code_phys, PAGE_RW | PAGE_USER)
+    vmm_map(USER_STACK_VADDR, stack_phys, PAGE_RW | PAGE_USER)
+
+    i: int = 0
+    while (i < 4096) {
+        __pokeb(USER_CODE_VADDR + i, 0)
+        i += 1
+    }
+    kmemcpy(USER_CODE_VADDR, g_user_test_blob_addr, g_user_test_blob_size)
+
+    vga_set_color(0x0B)
+    vga_print("entering ring 3 -- this halts the machine when it exits,\n")
+    vga_print("via SYS_EXIT, not a crash. reboot afterward.\n")
+    vga_set_color(0x0F)
+
+    jump_to_usermode(USER_CODE_VADDR, USER_STACK_VADDR + 4096)
+    # never reached -- jump_to_usermode does not return
+}

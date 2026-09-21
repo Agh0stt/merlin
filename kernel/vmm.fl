@@ -45,12 +45,31 @@ func vmm_get_pte_addr(vaddr: int) -> int {
     return pt_phys + pt_index * 4
 }
 
-# flags: PAGE_RW=0x2, PAGE_USER=0x4 (unused until there's a userland).
-# PAGE_PRESENT (0x1) is always set here -- there's no separate "mapped
-# but not present" concept exposed yet.
+# flags: PAGE_RW=0x2, PAGE_USER=0x4. PAGE_PRESENT (0x1) is always set
+# here -- there's no separate "mapped but not present" concept exposed
+# yet.
+#
+# PAGE_USER needs one more thing beyond just setting the PTE bit: the
+# x86 MMU ANDs together the PDE's and the PTE's permission bits --
+# whichever is more restrictive wins. Every PDE this kernel has ever
+# created (paging.s's initial 16 MiB, vmm_identity_map_region's
+# extension to full RAM) was built with U/S=0, since nothing needed
+# ring3 access before now. Without also clearing that bit on the
+# covering PDE, a "user-accessible" PTE is still silently blocked --
+# the CPU would #GP/#PF the instant ring3 code touched it, and it
+# would look exactly like the PTE flag was ignored rather than what
+# it actually is: a second gate that also has to open.
 func vmm_map(vaddr: int, paddr: int, flags: int) -> void {
     pte_addr: int = vmm_get_pte_addr(vaddr)
     __poke(pte_addr, (paddr & 0xFFFFF000) | (flags | 0x1))
+
+    if ((flags & 0x4) != 0) {
+        pd_index: int = (vaddr >> 22) & 0x3FF
+        pde_addr: int = g_page_dir + pd_index * 4
+        pde: int = __peek(pde_addr)
+        __poke(pde_addr, pde | 0x4)
+    }
+
     invlpg(vaddr)
 }
 
